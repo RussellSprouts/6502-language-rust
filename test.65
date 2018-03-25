@@ -1,1 +1,20 @@
-(){}345
+
+fn add(a: ptr<i8>, b: i8) -> i8 {
+    return a + b;
+}
+
+let a := 6;
+let b : i8 = 6;
+
+struct a {
+    field1: u8;
+    field2: struct {
+        r: u8;
+        g: u8;
+        b: u8;
+    };
+}
+
+fn main() {
+
+}

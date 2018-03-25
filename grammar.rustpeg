@@ -1,47 +1,223 @@
+#![arguments(ast: &'a Ast<'a>)]
+
 use std::i64;
 use super::AstNode;
 use super::Expression;
-use std::rc::Rc;
+use super::Type;
+use super::Arg;
+use super::Ast;
+use super::FnArg;
+use super::TypeArg;
+use super::UnaryOp;
+use super::BinaryOp;
 
 whitespace = #quiet<[ \n\r\t]+>
 identifier_char = [a-zA-Z0-9_$%]
 
 hex_literal -> i64 = ("0x" / "$") n:$([0-9a-fA-F]+) !identifier_char whitespace* { i64::from_str_radix(n, 16).unwrap() }
-binary_literal -> i64 = ("0b" / '%') n:$([01]+) !identifier_char whitespace* { i64::from_str_radix(n, 2).unwrap() }
+binary_literal -> i64 = ("0b") n:$([01]+) !identifier_char whitespace* { i64::from_str_radix(n, 2).unwrap() }
 decimal_literal -> i64 = n:$([0-9]+) !identifier_char whitespace* { i64::from_str_radix(n, 10).unwrap() }
 
 pub numeric_literal -> i64 = hex_literal / binary_literal / decimal_literal
 
-op<E> = E whitespace*
-keyword<E> = E !identifier_char whitespace*
+op<E> = p:#position E whitespace* { p }
+keyword<E> = p:#position E !identifier_char whitespace* { p }
 
-IF = keyword<"if">
-FN = keyword<"fn">
-LPAREN = op<"(">
-RPAREN = op<")">
-LBRACE = op<"{">
-RBRACE = op<"}">
-RETURNS = op<"->">
+IF -> usize = keyword<"if">
+ELSE -> usize = keyword<"else">
+FN -> usize = keyword<"fn">
+AS -> usize = keyword<"as">
+RETURN -> usize = keyword<"return">
+LET -> usize = keyword<"let">
+STRUCT -> usize = keyword<"struct">
 
-IDENTIFIER -> String = s:$([a-zA-Z_][a-zA-Z0-9_]*) { s.to_string() }
+keyword = IF / ELSE / FN / AS / RETURN / LET / STRUCT
 
-pub block -> AstNode = LBRACE stmts:(statement*) RBRACE {
-    AstNode::Block { statements: stmts.into_iter().map(|s| Rc::new(s)).collect() }
+LPAREN -> usize = op<"(">
+RPAREN -> usize = op<")">
+LBRACE -> usize = op<"{">
+RBRACE -> usize = op<"}">
+LSQUARE -> usize = op<"[">
+RSQUARE -> usize = op<"]">
+RETURNS -> usize = op<"->">
+DOT -> usize = op<".">
+EQUALS -> usize = op<"=">
+COMMA -> usize = op<",">
+COLON -> usize = op<":">
+SEMI -> usize = op<";">
+LT -> usize = op<"<">
+GT -> usize = op<">">
+
+IDENTIFIER -> String = !keyword s:$([a-zA-Z_][a-zA-Z0-9_]*) whitespace* { s.to_string() }
+
+pub program -> Vec<&'a AstNode<'a>> = whitespace* stmts:(statement*) {
+    stmts.into_iter()
+         .map(|s| { ast.create(s) })
+         .collect()
 }
 
-pub expression -> Expression = n:numeric_literal { Expression::Integer(n) }
+pub block -> AstNode<'a> = LBRACE stmts:(statement*) RBRACE {
+    AstNode::Block {
+        statements: stmts.into_iter()
+                         .map(|s| { ast.create(s) })
+                         .collect()
+    }
+}
 
-pub if_statement -> AstNode = IF LPAREN e:expression RPAREN s:statement {
+pub number_literal_expression -> Expression<'a> = loc:#position value:numeric_literal { Expression::Integer{ value, loc } }
+
+pub identifier_expression -> Expression<'a> = loc:#position name:IDENTIFIER { Expression::Identifier { name, loc } }
+
+pub paren_expression -> Expression<'a> = LPAREN e:expression RPAREN { e }
+
+pub expression_atom -> Expression<'a> = number_literal_expression / identifier_expression / paren_expression
+
+arg_name -> String = n:IDENTIFIER COLON { n }
+pub arg -> Arg<'a> = n:arg_name? e:expression { Arg { name: n, value: ast.create_exp(e) } }
+
+pub call_expression -> Expression<'a> = c:expression_atom loc:LPAREN args:(arg ** COMMA) RPAREN {
+  Expression::Call {
+    callee: ast.create_exp(c),
+    args: args,
+    loc
+  }
+}
+
+pub unary_op -> UnaryOp = op:$([\~\!\-\*\&]) whitespace* {
+    match op.trim() {
+        "~" => UnaryOp::BitwiseNot,
+        "!" => UnaryOp::LogicalNot,
+        "*" => UnaryOp::Indirect,
+        "&" => UnaryOp::AddressOf,
+        "-" => UnaryOp::Minus,
+        _ => panic!("shouldn't get here {}", op)
+    }
+}
+
+pub subscript_expression -> Expression<'a> = a:expression_atom loc:LSQUARE i:expression RSQUARE {
+  Expression::Subscript {
+    array: ast.create_exp(a),
+    index: ast.create_exp(i),
+    loc
+  }
+}
+
+pub dot_expression -> Expression<'a> = e:expression_atom loc:DOT p:IDENTIFIER {
+    Expression::Dot {
+        expression: ast.create_exp(e),
+        property: p,
+        loc
+    }
+}
+
+pub expression_level1 -> Expression<'a> = call_expression / subscript_expression / dot_expression / expression_atom
+
+pub unary_op_expression -> Expression<'a> = loc:#position op:unary_op e:expression_level1 {
+    Expression::UnaryOp {
+        expression: ast.create_exp(e),
+        op: op,
+        loc
+    }
+}
+
+pub cast_expression -> Expression<'a> = e:expression_level1 loc:AS t:type_value {
+    Expression::Cast {
+        expression: ast.create_exp(e),
+        new_type: t,
+        loc
+    }
+}
+
+pub expression_level2 -> Expression<'a> = unary_op_expression / cast_expression / expression_level1
+
+pub binop_expression -> Expression<'a> = #infix<expression_level2> {
+    #L a loc:op<"||"> b { Expression::BinaryOp { op: BinaryOp::LogicalOr, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+    #L a loc:op<"&&"> b { Expression::BinaryOp { op: BinaryOp::LogicalAnd, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+    #L a loc:op<"|"> b { Expression::BinaryOp { op: BinaryOp::BitwiseOr, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+    #L a loc:op<"^"> b { Expression::BinaryOp { op: BinaryOp::BitwiseXor, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+    #L a loc:op<"&"> b { Expression::BinaryOp { op: BinaryOp::BitwiseAnd, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+    #L a loc:op<"=="> b { Expression::BinaryOp { op: BinaryOp::Equal, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+       a loc:op<"!="> b { Expression::BinaryOp { op: BinaryOp::NotEqual, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+    #L a loc:op<"<="> b { Expression::BinaryOp { op: BinaryOp::LE, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+       a loc:op<"<"> b { Expression::BinaryOp { op: BinaryOp::LT, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+       a loc:op<">="> b { Expression::BinaryOp { op: BinaryOp::GE, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+       a loc:op<">"> b { Expression::BinaryOp { op: BinaryOp::GT, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+    #L a loc:op<">>"> b { Expression::BinaryOp { op: BinaryOp::RShift, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+       a loc:op<"<<"> b { Expression::BinaryOp { op: BinaryOp::LShift, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+    #L a loc:op<"+"> b { Expression::BinaryOp { op: BinaryOp::Plus, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+       a loc:op<"-"> b { Expression::BinaryOp { op: BinaryOp::Minus, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+    #L a loc:op<"*"> b { Expression::BinaryOp { op: BinaryOp::Times, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+       a loc:op<"/"> b { Expression::BinaryOp { op: BinaryOp::Divide, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+       a loc:op<"%"> b { Expression::BinaryOp { op: BinaryOp::Mod, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+}
+
+pub expression -> Expression<'a> = binop_expression / expression_level2
+
+pub else_clause -> AstNode<'a> = ELSE s:statement { s }
+
+pub if_statement -> AstNode<'a> = IF LPAREN e:expression RPAREN c:statement a:else_clause? {
     AstNode::If {
-        condition: Rc::new(e),
-        statement: Rc::new(s)
+        condition: ast.create_exp(e),
+        consequent: ast.create(c),
+        alternate: a.map(|s| { ast.create(s) })
     }
 }
 
-pub fn_definition -> AstNode = FN i:IDENTIFIER LPAREN RPAREN RETURNS r:IDENTIFIER {
+pub fn_arg -> FnArg = n:IDENTIFIER COLON t:type_value { FnArg { name: n, declared_type: t } }
+
+pub fn_definition -> AstNode<'a> = FN i:IDENTIFIER LPAREN args:(fn_arg ** COMMA) RPAREN t:(RETURNS t:type_value {t})? b:block {
     AstNode::FnDef {
-        name: i
+        name: i,
+        args: args,
+        return_type: if (t.is_some()) { t.unwrap() } else { Type::Identifier("void".to_string()) },
+        body: ast.create(b)
     }
 }
 
-pub statement -> AstNode = if_statement / block
+pub initializer -> &'a Expression<'a> = EQUALS e:expression { ast.create_exp(e) }
+
+pub var_definition -> AstNode<'a> = LET name:IDENTIFIER COLON t:type_value? i:initializer? SEMI {
+    AstNode::VarDefinition {
+        name,
+        declared_type: t,
+        initializer: i
+    }
+}
+
+fields -> Vec<(String, Type)> = (name:IDENTIFIER COLON declared_type: type_value SEMI { (name, declared_type) })*
+
+pub struct_definition -> AstNode<'a> = STRUCT name:IDENTIFIER LBRACE fields:fields RBRACE {
+    AstNode::StructDefinition {
+        name,
+        fields
+    }
+}
+
+pub anonymous_struct_definition -> Type = STRUCT LBRACE fields:fields RBRACE {
+    Type::AnonymousStruct(fields)
+}
+
+return_statement -> AstNode<'a> = RETURN e:expression? SEMI {
+    AstNode::Return { expression: e.map(|e| { ast.create_exp(e) }) }
+}
+
+expression_statement -> AstNode<'a> = e:expression {
+    AstNode::Expression { expression: ast.create_exp(e) }
+}
+
+pub statement -> AstNode<'a> = if_statement / block / fn_definition / return_statement / var_definition / expression_statement / struct_definition
+
+pub identifier_type -> Type = t:IDENTIFIER {
+    Type::Identifier(t)
+}
+
+pub type_arg -> TypeArg = name:arg_name? value:type_value { TypeArg { name, value } }
+
+pub generic_type -> Type = name:IDENTIFIER LT args:type_arg* GT {
+    Type::GenericType {
+        name,
+        args
+    }
+}
+
+pub type_value -> Type = generic_type / identifier_type / anonymous_struct_definition

@@ -1,9 +1,13 @@
 
-fn add(a: ptr<i8>, b: i8) -> i8 {
+fn add(a: i8, b: i8) -> i8 {
     return a + b;
 }
 
-let a := 6;
+fn sub(a: ptr<to: i8>, b: i8) -> i8 {
+    return *a - b * 5;
+}
+
+let a := 6 as u16;
 let b : i8 = 6;
 
 struct a {
@@ -16,5 +20,8 @@ struct a {
 }
 
 fn main() {
-
+  let xyz := 5;
+  xyz = 5;
+  let io: io_port<in: i8> = 0;
+  io <- 7;
 }

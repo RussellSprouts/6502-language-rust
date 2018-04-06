@@ -4,12 +4,12 @@ use std::i64;
 use super::AstNode;
 use super::Expression;
 use super::Type;
-use super::Arg;
 use super::Ast;
 use super::FnArg;
 use super::TypeArg;
 use super::UnaryOp;
 use super::BinaryOp;
+use super::AstCreate;
 
 whitespace = #quiet<[ \n\r\t]+>
 identifier_char = [a-zA-Z0-9_$%]
@@ -50,41 +50,50 @@ GT -> usize = op<">">
 
 IDENTIFIER -> String = !keyword s:$([a-zA-Z_][a-zA-Z0-9_]*) whitespace* { s.to_string() }
 
-pub program -> Vec<&'a AstNode<'a>> = whitespace* stmts:(statement*) {
-    stmts.into_iter()
-         .map(|s| { ast.create(s) })
-         .collect()
-}
-
-pub block -> AstNode<'a> = LBRACE stmts:(statement*) RBRACE {
+pub program -> AstNode<'a> = whitespace* stmts:(statement*) {
     AstNode::Block {
-        statements: stmts.into_iter()
-                         .map(|s| { ast.create(s) })
-                         .collect()
+        statements: ast.create(&stmts),
+        loc: 0,
+        id: ast.id()
     }
 }
 
-pub number_literal_expression -> Expression<'a> = loc:#position value:numeric_literal { Expression::Integer{ value, loc } }
+pub block -> AstNode<'a> = loc:LBRACE stmts:(statement*) RBRACE {
+    AstNode::Block {
+        statements: ast.create(&stmts),
+        loc, id: ast.id()
+    }
+}
 
-pub identifier_expression -> Expression<'a> = loc:#position name:IDENTIFIER { Expression::Identifier { name, loc } }
+pub number_literal_expression -> Expression<'a> = loc:#position value:numeric_literal { Expression::Integer{ value, loc, id: ast.id() } }
+
+pub identifier_expression -> Expression<'a> = loc:#position name:IDENTIFIER {
+    Expression::Identifier {
+        name: ast.create(&name),
+        loc,
+        id: ast.id()
+    }
+}
 
 pub paren_expression -> Expression<'a> = LPAREN e:expression RPAREN { e }
 
 pub expression_atom -> Expression<'a> = number_literal_expression / identifier_expression / paren_expression
 
-arg_name -> String = n:IDENTIFIER COLON { n }
-pub arg -> Arg<'a> = n:arg_name? e:expression { Arg { name: n, value: ast.create_exp(e) } }
+arg_name -> &'a str = n:IDENTIFIER COLON { ast.create(&n) }
+pub arg -> (Option<&'a str>, &'a Expression<'a>) = n:arg_name? e:expression { (n, ast.create(&e)) }
 
 pub call_expression -> Expression<'a> = c:expression_atom loc:LPAREN args:(arg ** COMMA) RPAREN {
   Expression::Call {
-    callee: ast.create_exp(c),
-    args: args,
-    loc
+    callee: ast.create(&c),
+    args: ast.create(&args),
+    loc,
+    id: ast.id()
   }
 }
 
-pub unary_op -> UnaryOp = op:$([\~\!\-\*\&]) whitespace* {
+pub unary_op -> UnaryOp = op:$("<-" / [\~\!\-\*\&]) whitespace* {
     match op.trim() {
+        "<-" => UnaryOp::IORead,
         "~" => UnaryOp::BitwiseNot,
         "!" => UnaryOp::LogicalNot,
         "*" => UnaryOp::Indirect,
@@ -96,17 +105,19 @@ pub unary_op -> UnaryOp = op:$([\~\!\-\*\&]) whitespace* {
 
 pub subscript_expression -> Expression<'a> = a:expression_atom loc:LSQUARE i:expression RSQUARE {
   Expression::Subscript {
-    array: ast.create_exp(a),
-    index: ast.create_exp(i),
-    loc
+    array: ast.create(&a),
+    index: ast.create(&i),
+    loc,
+    id: ast.id()
   }
 }
 
 pub dot_expression -> Expression<'a> = e:expression_atom loc:DOT p:IDENTIFIER {
     Expression::Dot {
-        expression: ast.create_exp(e),
-        property: p,
-        loc
+        expression: ast.create(&e),
+        property: ast.create(&p),
+        loc,
+        id: ast.id()
     }
 }
 
@@ -114,110 +125,132 @@ pub expression_level1 -> Expression<'a> = call_expression / subscript_expression
 
 pub unary_op_expression -> Expression<'a> = loc:#position op:unary_op e:expression_level1 {
     Expression::UnaryOp {
-        expression: ast.create_exp(e),
+        expression: ast.create(&e),
         op: op,
-        loc
+        loc,
+        id: ast.id()
     }
 }
 
 pub cast_expression -> Expression<'a> = e:expression_level1 loc:AS t:type_value {
     Expression::Cast {
-        expression: ast.create_exp(e),
+        expression: ast.create(&e),
         new_type: t,
-        loc
+        loc,
+        id: ast.id()
     }
 }
 
 pub expression_level2 -> Expression<'a> = unary_op_expression / cast_expression / expression_level1
 
 pub binop_expression -> Expression<'a> = #infix<expression_level2> {
-    #L a loc:op<"||"> b { Expression::BinaryOp { op: BinaryOp::LogicalOr, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-    #L a loc:op<"&&"> b { Expression::BinaryOp { op: BinaryOp::LogicalAnd, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-    #L a loc:op<"|"> b { Expression::BinaryOp { op: BinaryOp::BitwiseOr, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-    #L a loc:op<"^"> b { Expression::BinaryOp { op: BinaryOp::BitwiseXor, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-    #L a loc:op<"&"> b { Expression::BinaryOp { op: BinaryOp::BitwiseAnd, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-    #L a loc:op<"=="> b { Expression::BinaryOp { op: BinaryOp::Equal, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-       a loc:op<"!="> b { Expression::BinaryOp { op: BinaryOp::NotEqual, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-    #L a loc:op<"<="> b { Expression::BinaryOp { op: BinaryOp::LE, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-       a loc:op<"<"> b { Expression::BinaryOp { op: BinaryOp::LT, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-       a loc:op<">="> b { Expression::BinaryOp { op: BinaryOp::GE, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-       a loc:op<">"> b { Expression::BinaryOp { op: BinaryOp::GT, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-    #L a loc:op<">>"> b { Expression::BinaryOp { op: BinaryOp::RShift, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-       a loc:op<"<<"> b { Expression::BinaryOp { op: BinaryOp::LShift, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-    #L a loc:op<"+"> b { Expression::BinaryOp { op: BinaryOp::Plus, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-       a loc:op<"-"> b { Expression::BinaryOp { op: BinaryOp::Minus, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-    #L a loc:op<"*"> b { Expression::BinaryOp { op: BinaryOp::Times, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-       a loc:op<"/"> b { Expression::BinaryOp { op: BinaryOp::Divide, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
-       a loc:op<"%"> b { Expression::BinaryOp { op: BinaryOp::Mod, a: ast.create_exp(a), b: ast.create_exp(b), loc } }
+    #L a loc:op<"="> b { Expression::BinaryOp { op: BinaryOp::Assignment, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+       a loc:op<"<-"> b { Expression::BinaryOp { op: BinaryOp::IOWrite, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+    #L a loc:op<"||"> b { Expression::BinaryOp { op: BinaryOp::LogicalOr, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+    #L a loc:op<"&&"> b { Expression::BinaryOp { op: BinaryOp::LogicalAnd, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+    #L a loc:op<"|"> b { Expression::BinaryOp { op: BinaryOp::BitwiseOr, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+    #L a loc:op<"^"> b { Expression::BinaryOp { op: BinaryOp::BitwiseXor, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+    #L a loc:op<"&"> b { Expression::BinaryOp { op: BinaryOp::BitwiseAnd, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+    #L a loc:op<"=="> b { Expression::BinaryOp { op: BinaryOp::Equal, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+       a loc:op<"!="> b { Expression::BinaryOp { op: BinaryOp::NotEqual, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+    #L a loc:op<"<="> b { Expression::BinaryOp { op: BinaryOp::LE, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+       a loc:op<"<"> b { Expression::BinaryOp { op: BinaryOp::LT, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+       a loc:op<">="> b { Expression::BinaryOp { op: BinaryOp::GE, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+       a loc:op<">"> b { Expression::BinaryOp { op: BinaryOp::GT, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+    #L a loc:op<">>"> b { Expression::BinaryOp { op: BinaryOp::RShift, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+       a loc:op<"<<"> b { Expression::BinaryOp { op: BinaryOp::LShift, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+    #L a loc:op<"+"> b { Expression::BinaryOp { op: BinaryOp::Plus, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+       a loc:op<"-"> b { Expression::BinaryOp { op: BinaryOp::Minus, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+    #L a loc:op<"*"> b { Expression::BinaryOp { op: BinaryOp::Times, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+       a loc:op<"/"> b { Expression::BinaryOp { op: BinaryOp::Divide, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
+       a loc:op<"%"> b { Expression::BinaryOp { op: BinaryOp::Mod, a: ast.create(&a), b: ast.create(&b), loc, id: ast.id() } }
 }
 
 pub expression -> Expression<'a> = binop_expression / expression_level2
 
 pub else_clause -> AstNode<'a> = ELSE s:statement { s }
 
-pub if_statement -> AstNode<'a> = IF LPAREN e:expression RPAREN c:statement a:else_clause? {
+pub if_statement -> AstNode<'a> = loc:IF LPAREN e:expression RPAREN c:statement a:else_clause? {
     AstNode::If {
-        condition: ast.create_exp(e),
-        consequent: ast.create(c),
-        alternate: a.map(|s| { ast.create(s) })
+        condition: ast.create(&e),
+        consequent: ast.create(&c),
+        alternate: a.map(|s| { ast.create(&s) }),
+        loc,
+        id: ast.id()
     }
 }
 
-pub fn_arg -> FnArg = n:IDENTIFIER COLON t:type_value { FnArg { name: n, declared_type: t } }
+pub fn_arg -> FnArg<'a> = n:IDENTIFIER COLON t:type_value {
+    FnArg {
+        name: ast.create(&n),
+        declared_type: t
+    }
+}
 
-pub fn_definition -> AstNode<'a> = FN i:IDENTIFIER LPAREN args:(fn_arg ** COMMA) RPAREN t:(RETURNS t:type_value {t})? b:block {
+pub fn_definition -> AstNode<'a> = loc:FN i:IDENTIFIER LPAREN args:(fn_arg ** COMMA) RPAREN t:(RETURNS t:type_value {t})? b:block {
     AstNode::FnDef {
-        name: i,
-        args: args,
-        return_type: if (t.is_some()) { t.unwrap() } else { Type::Identifier("void".to_string()) },
-        body: ast.create(b)
+        name: ast.create(&i),
+        args: ast.create(&args),
+        return_type: if (t.is_some()) { t.unwrap() } else { Type::Identifier(ast.create(&"void".to_string())) },
+        body: ast.create(&b),
+        loc,
+        id: ast.id()
     }
 }
 
-pub initializer -> &'a Expression<'a> = EQUALS e:expression { ast.create_exp(e) }
+pub initializer -> &'a Expression<'a> = EQUALS e:expression { ast.create(&e) }
 
-pub var_definition -> AstNode<'a> = LET name:IDENTIFIER COLON t:type_value? i:initializer? SEMI {
+pub var_definition -> AstNode<'a> = loc:LET name:IDENTIFIER COLON t:type_value? i:initializer? SEMI {
     AstNode::VarDefinition {
-        name,
+        name: ast.create(&name),
         declared_type: t,
-        initializer: i
+        initializer: i,
+        loc,
+        id: ast.id()
     }
 }
 
-fields -> Vec<(String, Type)> = (name:IDENTIFIER COLON declared_type: type_value SEMI { (name, declared_type) })*
+fields -> Vec<(&'a str, Type<'a>)> = (name:IDENTIFIER COLON declared_type: type_value SEMI { (ast.create(&*name), declared_type) })*
 
-pub struct_definition -> AstNode<'a> = STRUCT name:IDENTIFIER LBRACE fields:fields RBRACE {
+pub struct_definition -> AstNode<'a> = loc:STRUCT name:IDENTIFIER LBRACE fields:fields RBRACE {
     AstNode::StructDefinition {
-        name,
-        fields
+        name: ast.create(&name),
+        fields: ast.create(&fields),
+        loc,
+        id: ast.id()
     }
 }
 
-pub anonymous_struct_definition -> Type = STRUCT LBRACE fields:fields RBRACE {
-    Type::AnonymousStruct(fields)
+pub anonymous_struct_definition -> Type<'a> = STRUCT LBRACE fields:fields RBRACE {
+    Type::AnonymousStruct(ast.create(&fields))
 }
 
-return_statement -> AstNode<'a> = RETURN e:expression? SEMI {
-    AstNode::Return { expression: e.map(|e| { ast.create_exp(e) }) }
+return_statement -> AstNode<'a> = loc:RETURN e:expression? SEMI {
+    AstNode::Return { expression: e.map(|e| { ast.create(&e) }), loc, id: ast.id() }
 }
 
-expression_statement -> AstNode<'a> = e:expression {
-    AstNode::Expression { expression: ast.create_exp(e) }
+expression_statement -> AstNode<'a> = loc:#position e:expression SEMI {
+    AstNode::Expression { expression: ast.create(&e), loc, id: ast.id() }
 }
 
-pub statement -> AstNode<'a> = if_statement / block / fn_definition / return_statement / var_definition / expression_statement / struct_definition
+pub statement -> AstNode<'a> = expression_statement / if_statement / block / fn_definition / return_statement / var_definition / struct_definition
 
-pub identifier_type -> Type = t:IDENTIFIER {
-    Type::Identifier(t)
+pub identifier_type -> Type<'a> = t:IDENTIFIER {
+    Type::Identifier(ast.create(&t))
 }
 
-pub type_arg -> TypeArg = name:arg_name? value:type_value { TypeArg { name, value } }
+pub type_arg -> TypeArg<'a> = name:arg_name? value:type_value {
+    TypeArg {
+        name: name.map(|n| { ast.create(&*n) }),
+        value
+    }
+}
 
-pub generic_type -> Type = name:IDENTIFIER LT args:type_arg* GT {
+pub generic_type -> Type<'a> = name:IDENTIFIER LT args:type_arg* GT {
     Type::GenericType {
-        name,
-        args
+        name: ast.create(&name),
+        args: ast.create(&args)
     }
 }
 
-pub type_value -> Type = generic_type / identifier_type / anonymous_struct_definition
+pub type_value -> Type<'a> = generic_type / identifier_type / anonymous_struct_definition

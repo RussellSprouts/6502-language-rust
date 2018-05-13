@@ -241,8 +241,7 @@ fn main() {
 
     println!("Parsed {:#?}", Children::<Expression2>::children(&parsed));
 
-    let global_scope = resolve_symbols(&parsed, &HashMap::new());
-    println!("Global scope: {:#?}", global_scope);
+    resolve_symbols(&parsed, &HashMap::new());
 }
 
 trait Children<'a, T> {
@@ -292,7 +291,7 @@ impl<'a> Children<'a, Expression2<'a>> for Expression2<'a> {
     }
 }
 
-fn resolve_symbols<'a>(expr: &'a Expression2<'a>, map: &HashMap<String, Expression2<'a>>) -> i64 {
+fn resolve_symbols<'a>(expr: &'a Expression2<'a>, map: &HashMap<String, Expression2<'a>>) {
     use Expression2Type::*;
 
     let mut new_map = map.clone();
@@ -302,7 +301,9 @@ fn resolve_symbols<'a>(expr: &'a Expression2<'a>, map: &HashMap<String, Expressi
         Identifier(name) => {
             match map.get(&name.to_string()) {
                 None => panic!("Unresolved identifier! {}", name),
-                _ => ()
+                Some(exp) => {
+                    println!("RESOLVED {} as {:?}", name, exp);
+                }
             }
         },
         For { var, .. } => new_map = map.insert(var.to_string(), expr),
@@ -324,14 +325,13 @@ fn resolve_symbols<'a>(expr: &'a Expression2<'a>, map: &HashMap<String, Expressi
                 }
                 resolve_symbols(child, &new_map);
             }
-            return 0
+            return;
         },
         _ => ()
     }
     for child in expr.children() {
         resolve_symbols(child, &new_map);
     }
-    0
 }
 
 trait PrintAst {

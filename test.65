@@ -15,4 +15,6 @@ fn nmi() {
 
 let array := for (n : 10) {
   return n + 4
-}
+};
+
+fn(x: i8) -> i8 { 6 };

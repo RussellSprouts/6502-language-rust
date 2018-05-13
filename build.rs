@@ -28,8 +28,9 @@ fn main() {
 
     let original_rust_source = match result {
         Ok(s) => s,
-        Err(..) => {
+        Err(msg) => {
             writeln!(stderr, "Error compiling PEG grammar").unwrap();
+            writeln!(stderr, "{}", msg).unwrap();
             exit(1);
         }
     };

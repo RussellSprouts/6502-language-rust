@@ -1,27 +1,18 @@
 
-fn add(a: i8, b: i8) -> i8 {
-    return a + b;
-}
+struct Sprite {
+    y: u8;
+    tile: u8;
+    attribute: u8;
+    x: u8;
+};
 
-fn sub(a: ptr<to: i8>, b: i8) -> i8 {
-    return *a - b * 5;
-}
+let sprite := Sprite { x: 10, 0, 0, y: 10 };
+let OAMDMA : io_port<in: u8> = 0x4014;
 
-let a := 6 as u16;
-let b : i8 = 6;
+fn nmi() {
+  OAMDMA <- if (1) { &sprite } else { 2 };
+};
 
-struct a {
-    field1: u8;
-    field2: struct {
-        r: u8;
-        g: u8;
-        b: u8;
-    };
-}
-
-fn main() {
-  let xyz := 5;
-  xyz = 5;
-  let io: io_port<in: i8> = 0;
-  io <- 7;
+let array := for (n : 10) {
+  return n + 4
 }

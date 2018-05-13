@@ -9,6 +9,7 @@ use super::BinaryOp;
 use super::AstCreate;
 use super::Expression2;
 use super::Expression2Type;
+use super::ExpressionTail;
 
 whitespace = #quiet<[ \n\r\t]+>
 identifier_char = [a-zA-Z0-9_$%]
@@ -101,7 +102,7 @@ pub block -> Expression2<'a> = loc:LBRACE stmts:(expression ** SEMI) term:SEMI? 
 
 pub paren_expression -> Expression2<'a> = LPAREN e:expression RPAREN { e }
 
-pub expression_atom -> Expression2<'a> = number_literal_expression / identifier_expression / paren_expression / if_expression / fn_definition / block / for_loop / struct_definition / let_expression / return_expression
+pub expression_atom -> Expression2<'a> = struct_initialization / number_literal_expression / identifier_expression / paren_expression / if_expression / fn_definition / block / for_loop / struct_definition / let_expression / return_expression
 
 arg_name -> &'a str = n:IDENTIFIER COLON { ast.create(&n) }
 pub arg -> (Option<&'a str>, &'a Expression2<'a>) = n:arg_name? e:expression { (n, ast.create(&e)) }
@@ -112,17 +113,6 @@ pub if_expression -> Expression2<'a> = loc:IF LPAREN condition:expression RPAREN
       condition: ast.create(&condition),
       consequent: ast.create(&c),
       alternate: a.map(|alternate| { ast.create(&alternate) })
-    },
-    loc,
-    id: ast.id()
-  }
-}
-
-pub call_expression -> Expression2<'a> = c:expression_atom loc:LPAREN args:(arg ** COMMA) COMMA? RPAREN {
-  Expression2 {
-    is: Expression2Type::Call {
-      callee: ast.create(&c),
-      args: ast.create(&args),
     },
     loc,
     id: ast.id()
@@ -141,26 +131,38 @@ pub unary_op -> UnaryOp = op:$("<-" / [\~\!\-\*\&]) whitespace* {
     }
 }
 
-pub subscript_expression -> Expression2<'a> = a:expression_atom loc:LSQUARE i:expression RSQUARE {
-  Expression2 {
-    is: Expression2Type::ArrayAccess {
-      array: ast.create(&a),
-      index: ast.create(&i),
-    },
-    loc,
-    id: ast.id()
-  }
+pub call_tail -> ExpressionTail<'a> = loc:LPAREN args:(arg ** COMMA) COMMA? RPAREN {
+  ExpressionTail::Call { args: ast.create(&args), loc }
 }
 
-pub dot_expression -> Expression2<'a> = e:expression_atom loc:DOT p:IDENTIFIER {
-    Expression2 {
-      is: Expression2Type::Dot {
-        expression: ast.create(&e),
-        property: ast.create(&p),
+pub array_access_tail -> ExpressionTail<'a> = loc:LSQUARE i:expression RSQUARE {
+  ExpressionTail::ArrayAccess { index: ast.create(&i), loc }
+}
+
+pub dot_tail -> ExpressionTail<'a> = loc:DOT p:IDENTIFIER {
+  ExpressionTail::Dot { property: ast.create(&p), loc }
+}
+
+pub expression_level1 -> Expression2<'a> = e:expression_atom tails:(call_tail / array_access_tail / dot_tail)* {
+  let mut e = e;
+  for tail in tails {
+    let old_e = e;
+    e = match tail {
+      ExpressionTail::Call { args, loc } => Expression2 {
+        is: Expression2Type::Call { callee: ast.create(&old_e), args },
+        id: ast.id(), loc 
       },
-      loc,
-      id: ast.id()
+      ExpressionTail::ArrayAccess { index, loc } => Expression2 {
+        is: Expression2Type::ArrayAccess { array: ast.create(&old_e), index },
+        id: ast.id(), loc 
+      },
+      ExpressionTail::Dot { property, loc } => Expression2 {
+        is: Expression2Type::Dot { expression: ast.create(&old_e), property },
+        id: ast.id(), loc
+      }
     }
+  }
+  e
 }
 
 pub return_expression -> Expression2<'a> = loc:RETURN e:expression {
@@ -183,8 +185,6 @@ pub struct_initialization -> Expression2<'a> = c:type_value loc:LBRACE args:(arg
     id: ast.id()
   }
 }
-
-pub expression_level1 -> Expression2<'a> = call_expression / subscript_expression / dot_expression / struct_initialization / expression_atom
 
 pub unary_op_expression -> Expression2<'a> = loc:#position op:unary_op e:expression_level1 {
     Expression2 {

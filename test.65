@@ -10,7 +10,7 @@ let sprite := Sprite { x: 10, 0, 0, y: 10 };
 let OAMDMA : io_port<in: u8> = 0x4014;
 
 fn nmi() {
-  OAMDMA <- if (1) { &sprite } else { 2 };
+  OAMDMA <- &sprite.hi();
 };
 
 let array := for (n : 10) {
